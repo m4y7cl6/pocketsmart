@@ -113,6 +113,7 @@ const HELP_TEXT = `💰 PocketSmart 記帳機器人
 
 📊 查詢指令：
   查詢 或 本月 → 本月花費統計
+  記錄 或 紀錄 → 最近 10 筆明細
   訂閱 → 訂閱列表
   刪除 1 → 刪除第 1 筆記錄
   說明 或 help → 顯示此說明`
@@ -152,7 +153,7 @@ export async function POST(req: NextRequest) {
         continue
       }
 
-      if (['記錄', '最近', '明細'].includes(userInput)) {
+      if (['記錄', '紀錄', '最近', '明細'].includes(userInput)) {
 		const result = await getRecentExpenses(userId)
 		await replyMessage(replyToken, result)
 		continue
