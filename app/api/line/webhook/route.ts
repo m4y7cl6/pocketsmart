@@ -1,0 +1,198 @@
+import { NextRequest, NextResponse } from 'next/server'
+import * as crypto from 'crypto'
+import { query, queryOne, getDevUserId } from '@/lib/db'
+import type { Category } from '@/lib/types'
+
+// ── 驗證 Line 簽名 ────────────────────────────────────────
+function validateSignature(body: string, signature: string): boolean {
+  const secret = process.env.LINE_CHANNEL_SECRET!
+  const hash = crypto
+    .createHmac('sha256', secret)
+    .update(body)
+    .digest('base64')
+  return hash === signature
+}
+
+// ── 呼叫 Groq 解析 ────────────────────────────────────────
+async function classifyExpense(input: string) {
+  const today = new Date().toISOString().split('T')[0]
+
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: 'llama-3.1-8b-instant',
+      max_tokens: 256,
+      messages: [
+        {
+          role: 'system',
+          content: `你是記帳助理，從用戶輸入提取記帳資訊，只回傳JSON不要其他文字。
+格式：{"amount":150,"category":"餐飲","description":"午餐便當","expense_date":"2024-01-15"}
+category只能是：餐飲、交通、購物、娛樂、醫療、住宿、教育、訂閱、其他`
+        },
+        {
+          role: 'user',
+          content: `今天日期：${today}\n用戶輸入：${input}`
+        }
+      ]
+    })
+  })
+
+  const data = await res.json()
+  const text = data.choices[0].message.content.replace(/```json|```/g, '').trim()
+  return JSON.parse(text)
+}
+
+// ── 傳送 Line 訊息 ────────────────────────────────────────
+async function replyMessage(replyToken: string, text: string) {
+  await fetch('https://api.line.me/v2/bot/message/reply', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      replyToken,
+      messages: [{ type: 'text', text }],
+    }),
+  })
+}
+
+// ── 查詢本月花費 ──────────────────────────────────────────
+async function getMonthlyTotal(userId: string): Promise<string> {
+  const month = new Date().toISOString().slice(0, 7)
+  const rows = await query<{ category: string; total: string }>(
+    `SELECT category, SUM(amount)::text AS total
+     FROM expenses
+     WHERE user_id = $1
+       AND to_char(expense_date, 'YYYY-MM') = $2
+     GROUP BY category
+     ORDER BY SUM(amount) DESC`,
+    [userId, month]
+  )
+
+  if (!rows.length) return '本月尚無記錄'
+
+  const grandTotal = rows.reduce((s, r) => s + parseFloat(r.total), 0)
+  const lines = rows.map(r => `${r.category}：NT$${parseFloat(r.total).toLocaleString()}`)
+  return `📊 本月花費統計\n${'─'.repeat(16)}\n${lines.join('\n')}\n${'─'.repeat(16)}\n💰 總計：NT$${grandTotal.toLocaleString()}`
+}
+
+// ── 查詢訂閱列表 ──────────────────────────────────────────
+async function getSubscriptions(userId: string): Promise<string> {
+  const rows = await query<{ name: string; amount: string; next_billing: string }>(
+    `SELECT name, amount::text, next_billing::text
+     FROM subscriptions
+     WHERE user_id = $1 AND is_active = true
+     ORDER BY next_billing ASC`,
+    [userId]
+  )
+
+  if (!rows.length) return '目前沒有訂閱項目'
+
+  const lines = rows.map(r => {
+    const days = Math.ceil((new Date(r.next_billing).getTime() - Date.now()) / 86_400_000)
+    const daysText = days <= 0 ? '今日扣款' : `${days} 天後`
+    return `${r.name}：NT$${parseFloat(r.amount).toLocaleString()}（${daysText}）`
+  })
+
+  const monthTotal = rows.reduce((s, r) => s + parseFloat(r.amount), 0)
+  return `📱 訂閱管理\n${'─'.repeat(16)}\n${lines.join('\n')}\n${'─'.repeat(16)}\n月訂閱總額：NT$${monthTotal.toLocaleString()}`
+}
+
+// ── 指令說明 ──────────────────────────────────────────────
+const HELP_TEXT = `💰 PocketSmart 記帳機器人
+
+📝 記帳（直接輸入）：
+  午餐便當 150
+  昨天買衣服 2500
+  Netflix 訂閱 199
+
+📊 查詢指令：
+  查詢 或 本月 → 本月花費統計
+  訂閱 → 訂閱列表
+  說明 或 help → 顯示此說明`
+
+// ── 主要 Webhook Handler ──────────────────────────────────
+export async function POST(req: NextRequest) {
+  const rawBody = await req.text()
+  const signature = req.headers.get('x-line-signature') ?? ''
+
+  // 驗證請求來自 Line
+  if (!validateSignature(rawBody, signature)) {
+    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+  }
+
+  const body = JSON.parse(rawBody)
+  const events = body.events ?? []
+
+  for (const event of events) {
+    if (event.type !== 'message' || event.message.type !== 'text') continue
+
+    const replyToken = event.replyToken
+    const userInput = event.message.text.trim()
+    const userId = getDevUserId() // TODO: 之後改成 Line userId 對應
+
+    try {
+      // ── 查詢指令 ──
+      if (['查詢', '本月', '統計'].includes(userInput)) {
+        const result = await getMonthlyTotal(userId)
+        await replyMessage(replyToken, result)
+        continue
+      }
+
+      if (['訂閱', '訂閱管理'].includes(userInput)) {
+        const result = await getSubscriptions(userId)
+        await replyMessage(replyToken, result)
+        continue
+      }
+
+      if (['說明', 'help', '幫助', '?', '？'].includes(userInput.toLowerCase())) {
+        await replyMessage(replyToken, HELP_TEXT)
+        continue
+      }
+
+      // ── 記帳（包含數字就嘗試解析）──
+      if (/\d/.test(userInput)) {
+        const parsed = await classifyExpense(userInput)
+
+        if (!parsed.amount || parsed.amount <= 0) {
+          await replyMessage(replyToken, '❌ 無法識別金額，請確認輸入包含數字\n例：午餐 150')
+          continue
+        }
+
+        // 存入資料庫
+        await queryOne(
+          `INSERT INTO expenses (user_id, amount, category, description, raw_input, expense_date)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            userId,
+            parsed.amount,
+            parsed.category as Category,
+            parsed.description,
+            userInput,
+            parsed.expense_date,
+          ]
+        )
+
+        await replyMessage(
+          replyToken,
+          `✅ 記帳成功！\n\n📝 ${parsed.description}\n💰 NT$${parsed.amount.toLocaleString()}\n🏷️ ${parsed.category}\n📅 ${parsed.expense_date}`
+        )
+        continue
+      }
+
+      // ── 看不懂的輸入 ──
+      await replyMessage(replyToken, `不太懂你的意思 😅\n\n輸入「說明」查看使用方式`)
+
+    } catch (err) {
+      console.error('[line webhook] error:', err)
+      await replyMessage(replyToken, '❌ 系統錯誤，請稍後再試')
+    }
+  }
+
+  return NextResponse.json({ ok: true })
+}
