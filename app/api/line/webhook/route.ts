@@ -114,6 +114,7 @@ const HELP_TEXT = `💰 PocketSmart 記帳機器人
 📊 查詢指令：
   查詢 或 本月 → 本月花費統計
   訂閱 → 訂閱列表
+  刪除 1 → 刪除第 1 筆記錄
   說明 或 help → 顯示此說明`
 
 // ── 主要 Webhook Handler ──────────────────────────────────
@@ -151,11 +152,25 @@ export async function POST(req: NextRequest) {
         continue
       }
 
+      if (['記錄', '最近', '明細'].includes(userInput)) {
+		const result = await getRecentExpenses(userId)
+		await replyMessage(replyToken, result)
+		continue
+	  }
+      // 刪除
+	  const deleteMatch = userInput.match(/^刪除\s*(\d+)$/)
+	  if (deleteMatch) {
+	    const index = parseInt(deleteMatch[1])
+	    const result = await deleteExpenseByIndex(userId, index)
+	    await replyMessage(replyToken, result)
+	    continue
+	  }
+	  
       if (['說明', 'help', '幫助', '?', '？'].includes(userInput.toLowerCase())) {
         await replyMessage(replyToken, HELP_TEXT)
         continue
       }
-
+	 
       // ── 記帳（包含數字就嘗試解析）──
       if (/\d/.test(userInput)) {
         const parsed = await classifyExpense(userInput)
@@ -214,4 +229,41 @@ async function getOrCreateUser(lineUserId: string): Promise<string> {
     [`line:${lineUserId}`, `Line用戶`]
   )
   return created!.id
+}
+// ── 查詢最近 10 筆記錄 ────────────────────────────────────
+async function getRecentExpenses(userId: string): Promise<string> {
+  const rows = await query<{ id: string; description: string; amount: string; category: string; expense_date: string }>(
+    `SELECT id, description, amount::text, category, expense_date::text
+     FROM expenses
+     WHERE user_id = $1
+     ORDER BY expense_date DESC, created_at DESC
+     LIMIT 10`,
+    [userId]
+  )
+
+  if (!rows.length) return '尚無記錄'
+
+  const lines = rows.map((r, i) =>
+    `${i + 1}. ${r.description} NT$${parseFloat(r.amount).toLocaleString()} [${r.category}] ${r.expense_date.slice(5)}`
+  )
+
+  return `📋 最近 10 筆記錄\n${'─'.repeat(16)}\n${lines.join('\n')}\n${'─'.repeat(16)}\n輸入「刪除 1」可刪除第 1 筆`
+}
+// ── 刪除第 N 筆記錄 ───────────────────────────────────────
+async function deleteExpenseByIndex(userId: string, index: number): Promise<string> {
+  const rows = await query<{ id: string; description: string; amount: string }>(
+    `SELECT id, description, amount::text
+     FROM expenses
+     WHERE user_id = $1
+     ORDER BY expense_date DESC, created_at DESC
+     LIMIT 10`,
+    [userId]
+  )
+
+  const target = rows[index - 1]
+  if (!target) return `❌ 找不到第 ${index} 筆，請先輸入「記錄」查看清單`
+
+  await query(`DELETE FROM expenses WHERE id = $1 AND user_id = $2`, [target.id, userId])
+
+  return `🗑️ 已刪除：${target.description} NT$${parseFloat(target.amount).toLocaleString()}`
 }
