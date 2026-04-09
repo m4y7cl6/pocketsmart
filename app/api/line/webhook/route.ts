@@ -134,7 +134,8 @@ export async function POST(req: NextRequest) {
 
     const replyToken = event.replyToken
     const userInput = event.message.text.trim()
-    const userId = getDevUserId() // TODO: 之後改成 Line userId 對應
+    const lineUserId = event.source.userId
+    const userId = await getOrCreateUser(lineUserId)
 
     try {
       // ── 查詢指令 ──
@@ -195,4 +196,22 @@ export async function POST(req: NextRequest) {
   }
 
   return NextResponse.json({ ok: true })
+}
+// ── 取得或建立 Line 用戶 ──────────────────────────────────
+async function getOrCreateUser(lineUserId: string): Promise<string> {
+  // 先查有沒有
+  const existing = await queryOne<{ id: string }>(
+    `SELECT id FROM users WHERE email = $1`,
+    [`line:${lineUserId}`]
+  )
+  if (existing) return existing.id
+
+  // 沒有就建立
+  const created = await queryOne<{ id: string }>(
+    `INSERT INTO users (email, name)
+     VALUES ($1, $2)
+     RETURNING id`,
+    [`line:${lineUserId}`, `Line用戶`]
+  )
+  return created!.id
 }
