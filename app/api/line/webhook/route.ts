@@ -102,7 +102,57 @@ async function getSubscriptions(userId: string): Promise<string> {
   const monthTotal = rows.reduce((s, r) => s + parseFloat(r.amount), 0)
   return `📱 訂閱管理\n${'─'.repeat(16)}\n${lines.join('\n')}\n${'─'.repeat(16)}\n月訂閱總額：NT$${monthTotal.toLocaleString()}`
 }
+// 查詢預算
+if (['預算', '本月預算'].includes(userInput)) {
+  const month = new Date().toISOString().slice(0, 7)
+  const budgetRow = await queryOne<{ amount: string }>(
+    `SELECT amount FROM budgets WHERE user_id = $1 AND month = $2`,
+    [userId, month]
+  )
+  const totalRow = await queryOne<{ total: string }>(
+    `SELECT COALESCE(SUM(amount), 0)::text AS total
+     FROM expenses WHERE user_id = $1 AND to_char(expense_date, 'YYYY-MM') = $2`,
+    [userId, month]
+  )
 
+  if (!budgetRow) {
+    await replyMessage(replyToken, '尚未設定本月預算\n\n輸入「設定預算 10000」來設定')
+  } else {
+    const budget = parseFloat(budgetRow.amount)
+    const total = parseFloat(totalRow?.total ?? '0')
+    const ratio = Math.round(total / budget * 100)
+    const remaining = budget - total
+
+    await replyMessage(replyToken,
+      `💰 本月預算狀況\n${'─'.repeat(16)}\n` +
+      `預算：NT$${budget.toLocaleString()}\n` +
+      `已花費：NT$${total.toLocaleString()}（${ratio}%）\n` +
+      `剩餘：NT$${remaining.toLocaleString()}\n${'─'.repeat(16)}\n` +
+      (ratio >= 100 ? '🚨 已超支！' : ratio >= 80 ? '⚠️ 快超支了！' : '✅ 預算充足')
+    )
+  }
+  continue
+}
+
+// 設定預算
+const budgetMatch = userInput.match(/^設定預算\s*(\d+)$/)
+if (budgetMatch) {
+  const amount = parseInt(budgetMatch[1])
+  const month = new Date().toISOString().slice(0, 7)
+
+  await queryOne(
+    `INSERT INTO budgets (user_id, month, amount)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, month)
+     DO UPDATE SET amount = EXCLUDED.amount`,
+    [userId, month, amount]
+  )
+
+  await replyMessage(replyToken,
+    `✅ 本月預算設定完成\n\n💰 NT$${amount.toLocaleString()}`
+  )
+  continue
+}
 // ── 指令說明 ──────────────────────────────────────────────
 const HELP_TEXT = `💰 PocketSmart 記帳機器人
 
@@ -115,6 +165,8 @@ const HELP_TEXT = `💰 PocketSmart 記帳機器人
   查詢 或 本月 → 本月花費統計
   記錄 或 紀錄 → 最近 10 筆明細
   訂閱 → 訂閱列表
+  預算 → 本月預算狀況
+  設定預算 10000 → 設定本月預算
   刪除 1 → 刪除第 1 筆記錄
   說明 或 help → 顯示此說明`
 
