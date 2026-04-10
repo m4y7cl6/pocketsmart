@@ -1,0 +1,15 @@
+name: Subscription Reminder
+
+on:
+  schedule:
+    - cron: '0 1 * * *'  # 每天 UTC 01:00 = 台灣時間 09:00
+  workflow_dispatch:       # 允許手動觸發，方便測試
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send subscription reminder
+        run: |
+          curl -X GET https://pocketsmart-production.up.railway.app/api/cron/subscription-reminder \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"
