@@ -35,6 +35,57 @@ async function getOrCreateUser(lineUserId: string): Promise<string> {
   )
   return created!.id
 }
+// ── Line 推播（主動推送）────────────────────────────────
+async function sendLineMessage(lineUserId: string, text: string) {
+  await fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      to: lineUserId,
+      messages: [{ type: 'text', text }],
+    }),
+  })
+}
+
+// ── 檢查預算並發通知 ──────────────────────────────────────
+async function checkBudgetAndNotify(userId: string, lineUserId: string, month: string) {
+  const totalRow = await queryOne<{ total: string }>(
+    `SELECT COALESCE(SUM(amount), 0)::text AS total
+     FROM expenses
+     WHERE user_id = $1 AND to_char(expense_date, 'YYYY-MM') = $2`,
+    [userId, month]
+  )
+
+  const budgetRow = await queryOne<{ amount: string }>(
+    `SELECT amount FROM budgets WHERE user_id = $1 AND month = $2`,
+    [userId, month]
+  )
+
+  if (!budgetRow || !totalRow) return
+
+  const total = parseFloat(totalRow.total)
+  const budget = parseFloat(budgetRow.amount)
+  const ratio = total / budget
+
+  if (ratio >= 1) {
+    await sendLineMessage(lineUserId,
+      `🚨 本月預算已超支！\n\n` +
+      `預算：NT$${budget.toLocaleString()}\n` +
+      `已花費：NT$${total.toLocaleString()}\n` +
+      `超出：NT$${(total - budget).toLocaleString()}`
+    )
+  } else if (ratio >= 0.8) {
+    await sendLineMessage(lineUserId,
+      `⚠️ 本月預算已使用 ${Math.round(ratio * 100)}%\n\n` +
+      `預算：NT$${budget.toLocaleString()}\n` +
+      `已花費：NT$${total.toLocaleString()}\n` +
+      `剩餘：NT$${(budget - total).toLocaleString()}`
+    )
+  }
+}
 
 // ── 呼叫 Groq 解析 ────────────────────────────────────────
 async function classifyExpense(input: string) {
@@ -340,6 +391,8 @@ export async function POST(req: NextRequest) {
           replyToken,
           `✅ 記帳成功！\n\n📝 ${parsed.description}\n💰 NT$${parsed.amount.toLocaleString()}\n🏷️ ${parsed.category}\n📅 ${parsed.expense_date}`
         )
+		await checkBudgetAndNotify(userId, lineUserId, parsed.expense_date.slice(0, 7))
+		
         continue
       }
 
