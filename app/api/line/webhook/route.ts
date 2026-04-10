@@ -19,7 +19,13 @@ async function getOrCreateUser(lineUserId: string): Promise<string> {
     `SELECT id FROM users WHERE email = $1`,
     [`line:${lineUserId}`]
   )
-  if (existing) return existing.id
+  if (existing) {
+	  await query(
+		`UPDATE users SET line_user_id = $1 WHERE id = $2 AND line_user_id IS NULL`,
+		[lineUserId, existing.id]
+	  )
+  return existing.id
+  }
 
   const created = await queryOne<{ id: string }>(
     `INSERT INTO users (email, name, line_user_id)
