@@ -43,7 +43,6 @@ export async function POST(req: NextRequest) {
   try {
     const userId = getDevUserId()
     const body = await req.json()
-
     const { amount, category, description, note, raw_input, expense_date } = body
 
     if (!amount || amount <= 0) {
@@ -67,6 +66,16 @@ export async function POST(req: NextRequest) {
         expense_date ?? new Date().toISOString().split('T')[0],
       ],
     )
+
+    // ← 加這段：如果是訂閱，同時存到 subscriptions
+    if (category === '訂閱') {
+      await queryOne(
+        `INSERT INTO subscriptions (user_id, name, amount, billing_cycle, next_billing)
+         VALUES ($1, $2, $3, 'monthly', CURRENT_DATE + INTERVAL '30 days')
+         ON CONFLICT DO NOTHING`,
+        [userId, description, amount],
+      )
+    }
 
     return NextResponse.json(row, { status: 201 })
   } catch (err) {
