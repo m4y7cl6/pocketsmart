@@ -245,7 +245,11 @@ async function getRecentExpenses(userId: string): Promise<string> {
     `SELECT id, description, amount::text, category, expense_date::text
      FROM expenses
      WHERE user_id = $1
-     ORDER BY expense_date DESC, created_at DESC
+     UNION ALL
+     SELECT id, name AS description, amount::text, '訂閱' AS category, next_billing::text AS expense_date
+     FROM subscriptions
+     WHERE user_id = $1 AND is_active = true
+     ORDER BY expense_date DESC
      LIMIT 10`,
     [userId]
   )
@@ -260,19 +264,27 @@ async function getRecentExpenses(userId: string): Promise<string> {
 }
 // ── 刪除第 N 筆記錄 ───────────────────────────────────────
 async function deleteExpenseByIndex(userId: string, index: number): Promise<string> {
-  const rows = await query<{ id: string; description: string; amount: string }>(
-    `SELECT id, description, amount::text
+  const rows = await query<{ id: string; description: string; amount: string; source: string }>(
+    `SELECT id, description, amount::text, 'expense' AS source
      FROM expenses
      WHERE user_id = $1
-     ORDER BY expense_date DESC, created_at DESC
+     UNION ALL
+     SELECT id, name AS description, amount::text, 'subscription' AS source
+     FROM subscriptions
+     WHERE user_id = $1 AND is_active = true
+     ORDER BY source
      LIMIT 10`,
     [userId]
   )
 
   const target = rows[index - 1]
-  if (!target) return `❌ 找不到第 ${index} 筆，請先輸入「記錄」查看清單`
+  if (!target) return `❌ 找不到第 ${index} 筆，請先輸入「紀錄」查看清單`
 
-  await query(`DELETE FROM expenses WHERE id = $1 AND user_id = $2`, [target.id, userId])
+  if (target.source === 'expense') {
+    await query(`DELETE FROM expenses WHERE id = $1 AND user_id = $2`, [target.id, userId])
+  } else {
+    await query(`DELETE FROM subscriptions WHERE id = $1 AND user_id = $2`, [target.id, userId])
+  }
 
   return `🗑️ 已刪除：${target.description} NT$${parseFloat(target.amount).toLocaleString()}`
 }
