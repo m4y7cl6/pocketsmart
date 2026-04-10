@@ -51,6 +51,7 @@ export default function DashboardPage() {
   function handleDelete(id: string) {
     setExpenses((prev) => prev.filter((e) => e.id !== id))
     loadStats()
+	loadSubscriptions()
   }
 
   function handleSuccess() {

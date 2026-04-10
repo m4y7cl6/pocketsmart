@@ -85,10 +85,27 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: '缺少 id' }, { status: 400 })
     }
 
+    // 先查這筆記錄的分類和說明
+    const expense = await queryOne<{ category: string; description: string }>(
+      'SELECT category, description FROM expenses WHERE id = $1 AND user_id = $2',
+      [id, userId],
+    )
+
+    // 刪除記帳記錄
     await query(
       'DELETE FROM expenses WHERE id = $1 AND user_id = $2',
       [id, userId],
     )
+
+    // 如果是訂閱分類，同時刪除對應的訂閱
+    if (expense?.category === '訂閱') {
+      await query(
+        `DELETE FROM subscriptions
+         WHERE user_id = $1
+           AND name ILIKE $2`,
+        [userId, `%${expense.description}%`],
+      )
+    }
 
     return NextResponse.json({ success: true })
   } catch (err) {
