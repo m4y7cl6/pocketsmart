@@ -57,6 +57,7 @@ export default function DashboardPage() {
   function handleSuccess() {
     loadExpenses()
     loadStats()
+	loadSubscriptions()
   }
 
   const monthTotal = expenses.reduce((s, e) => s + Number(e.amount), 0)
