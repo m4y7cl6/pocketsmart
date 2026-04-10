@@ -194,7 +194,15 @@ export async function POST(req: NextRequest) {
             parsed.expense_date,
           ]
         )
-
+		// ← 加這段：如果是訂閱，同時存到 subscriptions
+		if (parsed.category === '訂閱') {
+		  await queryOne(
+			`INSERT INTO subscriptions (user_id, name, amount, billing_cycle, next_billing)
+			 VALUES ($1, $2, $3, 'monthly', CURRENT_DATE + INTERVAL '30 days')
+			 ON CONFLICT DO NOTHING`,
+			[userId, parsed.description, parsed.amount]
+		  )
+		}
         await replyMessage(
           replyToken,
           `✅ 記帳成功！\n\n📝 ${parsed.description}\n💰 NT$${parsed.amount.toLocaleString()}\n🏷️ ${parsed.category}\n📅 ${parsed.expense_date}`
